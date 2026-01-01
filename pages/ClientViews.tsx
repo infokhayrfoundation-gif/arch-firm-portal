@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, Project, Update, AvailabilityRecord } from '../types';
 import { db } from '../services/db';
+import { supabase } from '../services/supabase';
 import { Button, Input, StatusBadge, ProgressBar, FileUpload, GlassCard, SectionTitle, Label } from '../components/UI';
 import { syncProjectBriefToSheets } from '../services/sheets';
 
@@ -256,6 +257,35 @@ export const ClientDashboard: React.FC<{ user: User; onLogout: () => void; navig
         const projs = db.getProjects(user.id, user.role);
         setProjects(projs); 
     }, [user.id, user.role, activeTab]);
+
+    // Supabase Realtime listener for projects table updates
+    useEffect(() => {
+        if (!user?.id) return;
+
+        // Subscribe to changes on the 'projects' table
+        const channel = supabase
+            .channel('projects-changes')
+            .on(
+                'postgres_changes',
+                {
+                    event: 'UPDATE',
+                    schema: 'public',
+                    table: 'projects',
+                    filter: `client_id=eq.${user.id}`
+                },
+                (payload) => {
+                    // When an UPDATE occurs, refresh the projects from the database
+                    const updatedProjects = db.getProjects(user.id, user.role);
+                    setProjects(updatedProjects);
+                }
+            )
+            .subscribe();
+
+        // Cleanup subscription on unmount
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, [user.id, user.role]);
 
     const project = projects[0];
 
