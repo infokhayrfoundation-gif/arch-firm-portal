@@ -1,135 +1,97 @@
-
 import { User, Project, Appointment, Proposal, Update, PaymentRecord, ProjectStatus, InitialForm, AvailabilityRecord, UserRole } from '../types';
+import { supabase } from './supabase';
 
-const MOCK_SUPERADMIN: User = {
-  id: 'superadmin-1',
-  name: 'Anjola',
-  email: 'anjola@atelieranj.com',
-  password: 'password123',
-  phone: '555-0123',
-  role: 'superadmin',
-  created_projects: [],
-  photo: 'https://picsum.photos/200'
-};
+// Supabase-based database service - replaces localStorage implementation
+// All methods are async because Supabase operations are asynchronous
+class SupabaseDB {
+  // --- User Operations ---
+  async login(email: string, password: string, role: string): Promise<User | null> {
+    try {
+      const cleanEmail = email.trim().toLowerCase();
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', cleanEmail)
+        .eq('password', password)
+        .single();
 
-const MOCK_CLIENT: User = {
-  id: 'client-demo-1',
-  name: 'Demo Client',
-  email: 'client@example.com',
-  password: 'password123',
-  phone: '555-9999',
-  role: 'client',
-  created_projects: ['proj-demo-1'],
-  photo: 'https://picsum.photos/200'
-};
+      if (error || !data) return null;
 
-const MOCK_PROJECT: Project = {
-  id: 'proj-demo-1',
-  client_id: 'client-demo-1',
-  project_title: 'Minimalist Lakehouse',
-  status: 'Proposal Sent',
-  initial_form: {
-    project_title: 'Minimalist Lakehouse',
-    project_location: 'Epe, Lagos',
-    project_type: 'Residential',
-    budget: 45000000,
-    timeline: '12 Months',
-    requirements: 'A 4-bedroom sustainable home with panoramic lake views and brutalist concrete finishes.',
-    inspiration_images: [],
-    submitted_at: new Date().toISOString()
-  },
-  construction_updates: [],
-  percent_complete: 5,
-  created_at: new Date().toISOString(),
-  payment_status: 'unpaid',
-  concept_is_approved: false,
-  proposal: {
-    id: 'prop-demo-1',
-    project_id: 'proj-demo-1',
-    proposal_file: 'proposal.pdf',
-    amount: 15000000,
-    validity_date: new Date(Date.now() + 86400000 * 7).toISOString(),
-    status: 'sent',
-    sent_at: new Date().toISOString(),
-    created_by_id: 'superadmin-1'
-  }
-};
+      const user = data as User;
+      const staffRoles: UserRole[] = ['superadmin', 'worker', 'project_manager', 'inspector'];
+      
+      if (role === 'admin' && !staffRoles.includes(user.role)) return null;
+      if (role !== 'admin' && user.role !== role) return null;
 
-const DEFAULT_SLOTS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"];
-
-class MockDB {
-  private users: User[] = [];
-  private projects: Project[] = [];
-  private availability: AvailabilityRecord[] = [];
-
-  constructor() {
-    this.load();
-    if (this.users.length === 0) {
-      this.users = [MOCK_SUPERADMIN, MOCK_CLIENT];
-      this.projects = [MOCK_PROJECT];
-      this.save();
+      return user;
+    } catch (e) {
+      console.error('Login error:', e);
+      return null;
     }
   }
 
-  private load() {
-    const u = localStorage.getItem('atelier_users');
-    const p = localStorage.getItem('atelier_projects');
-    const a = localStorage.getItem('atelier_availability');
-    this.users = u ? JSON.parse(u) : [];
-    this.projects = p ? JSON.parse(p) : [];
-    this.availability = a ? JSON.parse(a) : [];
-  }
-
-  private save() {
-    localStorage.setItem('atelier_users', JSON.stringify(this.users));
-    localStorage.setItem('atelier_projects', JSON.stringify(this.projects));
-    localStorage.setItem('atelier_availability', JSON.stringify(this.availability));
-  }
-
-  // --- User Operations ---
-  login(email: string, password: string, role: string): User | null {
-    const cleanEmail = email.trim().toLowerCase();
-    const staffRoles: UserRole[] = ['superadmin', 'worker', 'project_manager', 'inspector'];
-    const user = this.users.find(u => {
-      const basicMatch = u.email.trim().toLowerCase() === cleanEmail && u.password === password;
-      if (!basicMatch) return false;
-      if (role === 'admin') return staffRoles.includes(u.role);
-      return u.role === role;
-    });
-    return user || null;
-  }
-
-  signup(data: Partial<User>): User {
+  async signup(data: Partial<User>): Promise<User> {
     const cleanEmail = (data.email || '').trim().toLowerCase();
-    const existing = this.users.find(u => u.email.trim().toLowerCase() === cleanEmail);
+    
+    // Check if user exists
+    const { data: existing } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', cleanEmail)
+      .single();
+
     if (existing) throw new Error('Email already registered');
+
     const newUser: User = {
-        id: `user-${Date.now()}`,
-        name: data.name || '',
-        email: cleanEmail,
-        password: data.password || '',
-        phone: data.phone || '',
-        role: data.role as UserRole || 'client',
-        created_projects: [],
-        photo: 'https://picsum.photos/200'
+      id: `user-${Date.now()}`,
+      name: data.name || '',
+      email: cleanEmail,
+      password: data.password || '',
+      phone: data.phone || '',
+      role: data.role as UserRole || 'client',
+      created_projects: [],
+      photo: 'https://picsum.photos/200'
     };
-    this.users.push(newUser);
-    this.save();
+
+    const { error } = await supabase.from('users').insert([newUser]);
+    if (error) throw error;
+
     return newUser;
   }
 
-  updateUserPassword(email: string, password: string) {
+  async updateUserPassword(email: string, password: string): Promise<void> {
     const cleanEmail = email.trim().toLowerCase();
-    const user = this.users.find(u => u.email.trim().toLowerCase() === cleanEmail);
-    if (user) { user.password = password; this.save(); }
-    else throw new Error('User not found');
+    const { error } = await supabase
+      .from('users')
+      .update({ password })
+      .eq('email', cleanEmail);
+
+    if (error) throw new Error('User not found');
   }
 
-  getUser(id: string) { return this.users.find(u => u.id === id); }
-  getUserByEmail(email: string) { return this.users.find(u => u.email.trim().toLowerCase() === email.trim().toLowerCase()); }
+  async getUser(id: string): Promise<User | undefined> {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    return data as User | undefined;
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const cleanEmail = email.trim().toLowerCase();
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', cleanEmail)
+      .single();
+
+    return data as User | undefined;
+  }
 
   // --- Project Operations ---
-  createProject(clientId: string, form: InitialForm): Project {
+  async createProject(clientId: string, form: InitialForm): Promise<Project> {
     const project: Project = {
       id: `proj-${Date.now()}`,
       client_id: clientId,
@@ -142,49 +104,164 @@ class MockDB {
       payment_status: 'unpaid',
       concept_is_approved: false
     };
-    this.projects.push(project);
-    const user = this.users.find(u => u.id === clientId);
-    if (user) user.created_projects.push(project.id);
-    this.save();
+
+    const { error: projectError } = await supabase
+      .from('projects')
+      .insert([{
+        id: project.id,
+        client_id: project.client_id,
+        project_title: project.project_title,
+        status: project.status,
+        initial_form: project.initial_form,
+        construction_updates: project.construction_updates,
+        percent_complete: project.percent_complete,
+        created_at: project.created_at,
+        payment_status: project.payment_status,
+        concept_is_approved: project.concept_is_approved
+      }]);
+
+    if (projectError) throw projectError;
+
+    // Update user's created_projects
+    const user = await this.getUser(clientId);
+    if (user) {
+      const updatedProjects = [...(user.created_projects || []), project.id];
+      await supabase
+        .from('users')
+        .update({ created_projects: updatedProjects })
+        .eq('id', clientId);
+    }
+
     return project;
   }
 
-  getProjects(userId?: string, role?: string): Project[] {
-    if (['superadmin', 'worker', 'project_manager', 'inspector'].includes(role || '')) return this.projects;
-    return this.projects.filter(p => p.client_id === userId);
-  }
+  async getProjects(userId?: string, role?: string): Promise<Project[]> {
+    try {
+      let query = supabase.from('projects').select('*');
 
-  getProjectById(id: string): Project | undefined { return this.projects.find(p => p.id === id); }
+      if (['superadmin', 'worker', 'project_manager', 'inspector'].includes(role || '')) {
+        // Staff can see all projects
+        const { data, error } = await query.order('created_at', { ascending: false });
+        if (error) throw error;
+        return this.mapProjectsFromDB(data || []);
+      } else if (userId) {
+        // Clients see only their projects
+        const { data, error } = await query.eq('client_id', userId).order('created_at', { ascending: false });
+        if (error) throw error;
+        return this.mapProjectsFromDB(data || []);
+      }
 
-  updateProject(id: string, updates: Partial<Project>): Project {
-    const idx = this.projects.findIndex(p => p.id === id);
-    if (idx === -1) throw new Error('Project not found');
-    this.projects[idx] = { ...this.projects[idx], ...updates };
-    this.save();
-    return this.projects[idx];
-  }
-
-  // --- Workflow Actions ---
-  bookAppointment(projectId: string, date: string, time: string, clientId: string): Appointment {
-    let isoDateTime = new Date().toISOString();
-    try { isoDateTime = new Date(`${date}T${time}`).toISOString(); } catch (e) {}
-    const appointment: Appointment = { id: `apt-${Date.now()}`, client_id: clientId, date, time, datetime: isoDateTime, status: 'pending' };
-    this.updateProject(projectId, { appointment, status: 'Appointment Needed' });
-    return appointment;
-  }
-
-  confirmAppointment(projectId: string) {
-    const project = this.getProjectById(projectId);
-    if (project && project.appointment) {
-      const updatedApt: Appointment = { ...project.appointment, status: 'confirmed' };
-      this.updateProject(projectId, { appointment: updatedApt, status: 'Consultation Done' });
+      return [];
+    } catch (e) {
+      console.error('Get projects error:', e);
+      return [];
     }
   }
 
-  sendProposal(projectId: string, amount: number, fileUrl: string, userId: string) {
-    const user = this.getUser(userId);
-    const project = this.getProjectById(projectId);
+  async getProjectById(id: string): Promise<Project | undefined> {
+    const { data, error } = await supabase
+      .from('projects')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error || !data) return undefined;
+    return this.mapProjectFromDB(data);
+  }
+
+  async updateProject(id: string, updates: Partial<Project>): Promise<Project> {
+    const dbUpdate: any = {};
+    
+    // Map Project fields to database columns
+    if (updates.status !== undefined) dbUpdate.status = updates.status;
+    if (updates.project_title !== undefined) dbUpdate.project_title = updates.project_title;
+    if (updates.initial_form !== undefined) dbUpdate.initial_form = updates.initial_form;
+    if (updates.appointment !== undefined) dbUpdate.appointment = updates.appointment;
+    if (updates.consultation_notes !== undefined) dbUpdate.consultation_notes = updates.consultation_notes;
+    if (updates.proposal !== undefined) dbUpdate.proposal = updates.proposal;
+    if (updates.invoice_amount !== undefined) dbUpdate.invoice_amount = updates.invoice_amount;
+    if (updates.payment_status !== undefined) dbUpdate.payment_status = updates.payment_status;
+    if (updates.concept_design_file !== undefined) dbUpdate.concept_design_file = updates.concept_design_file;
+    if (updates.concept_canva_link !== undefined) dbUpdate.concept_canva_link = updates.concept_canva_link;
+    if (updates.concept_is_approved !== undefined) dbUpdate.concept_is_approved = updates.concept_is_approved;
+    if (updates.client_approval !== undefined) dbUpdate.client_approval = updates.client_approval;
+    if (updates.client_change_request_notes !== undefined) dbUpdate.client_change_request_notes = updates.client_change_request_notes;
+    if (updates.client_change_request_files !== undefined) dbUpdate.client_change_request_files = updates.client_change_request_files;
+    if (updates.construction_updates !== undefined) dbUpdate.construction_updates = updates.construction_updates;
+    if (updates.percent_complete !== undefined) dbUpdate.percent_complete = updates.percent_complete;
+    if (updates.handover_file !== undefined) dbUpdate.handover_file = updates.handover_file;
+    if (updates.completion_date !== undefined) dbUpdate.completion_date = updates.completion_date;
+
+    const { data, error } = await supabase
+      .from('projects')
+      .update(dbUpdate)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return this.mapProjectFromDB(data);
+  }
+
+  // Helper methods to map between DB format and Project type
+  private mapProjectFromDB(dbProject: any): Project {
+    return {
+      id: dbProject.id,
+      client_id: dbProject.client_id,
+      project_title: dbProject.project_title,
+      status: dbProject.status,
+      initial_form: dbProject.initial_form || undefined,
+      appointment: dbProject.appointment || undefined,
+      consultation_notes: dbProject.consultation_notes,
+      proposal: dbProject.proposal || undefined,
+      invoice_amount: dbProject.invoice_amount,
+      payment_status: dbProject.payment_status,
+      concept_design_file: dbProject.concept_design_file,
+      concept_canva_link: dbProject.concept_canva_link,
+      concept_is_approved: dbProject.concept_is_approved || false,
+      client_approval: dbProject.client_approval,
+      client_change_request_notes: dbProject.client_change_request_notes,
+      client_change_request_files: dbProject.client_change_request_files,
+      construction_updates: dbProject.construction_updates || [],
+      percent_complete: dbProject.percent_complete || 0,
+      handover_file: dbProject.handover_file,
+      completion_date: dbProject.completion_date,
+      created_at: dbProject.created_at
+    };
+  }
+
+  private mapProjectsFromDB(dbProjects: any[]): Project[] {
+    return dbProjects.map(p => this.mapProjectFromDB(p));
+  }
+
+  // --- Workflow Actions ---
+  async bookAppointment(projectId: string, date: string, time: string, clientId: string): Promise<Appointment> {
+    const isoDateTime = new Date(`${date}T${time}`).toISOString();
+    const appointment: Appointment = {
+      id: `apt-${Date.now()}`,
+      client_id: clientId,
+      date,
+      time,
+      datetime: isoDateTime,
+      status: 'pending'
+    };
+    await this.updateProject(projectId, { appointment, status: 'Appointment Needed' });
+    return appointment;
+  }
+
+  async confirmAppointment(projectId: string): Promise<void> {
+    const project = await this.getProjectById(projectId);
+    if (project && project.appointment) {
+      const updatedApt: Appointment = { ...project.appointment, status: 'confirmed' };
+      await this.updateProject(projectId, { appointment: updatedApt, status: 'Consultation Done' });
+    }
+  }
+
+  async sendProposal(projectId: string, amount: number, fileUrl: string, userId: string): Promise<void> {
+    const user = await this.getUser(userId);
+    const project = await this.getProjectById(projectId);
     const isSuper = user?.role === 'superadmin';
+    
     const proposal: Proposal = {
       id: `prop-${Date.now()}`,
       project_id: projectId,
@@ -195,115 +272,177 @@ class MockDB {
       sent_at: new Date().toISOString(),
       created_by_id: userId
     };
-    this.updateProject(projectId, {
+
+    await this.updateProject(projectId, {
       proposal,
       invoice_amount: amount,
-      status: isSuper ? 'Proposal Sent' : project?.status as ProjectStatus || 'Consultation Done',
+      status: isSuper ? 'Proposal Sent' : (project?.status as ProjectStatus || 'Consultation Done'),
       payment_status: 'unpaid'
     });
   }
 
-  approveProposal(projectId: string) {
-    const project = this.getProjectById(projectId);
+  async approveProposal(projectId: string): Promise<void> {
+    const project = await this.getProjectById(projectId);
     if (project && project.proposal) {
-      this.updateProject(projectId, {
+      await this.updateProject(projectId, {
         proposal: { ...project.proposal, status: 'sent' },
         status: 'Proposal Sent'
       });
     }
   }
 
-  requestProposalRevision(projectId: string, notes: string) {
-    const project = this.getProjectById(projectId);
+  async requestProposalRevision(projectId: string, notes: string): Promise<void> {
+    const project = await this.getProjectById(projectId);
     if (project && project.proposal) {
-      this.updateProject(projectId, {
+      await this.updateProject(projectId, {
         status: 'Proposal Revision',
         proposal: { ...project.proposal, status: 'revision_requested', revision_notes: notes }
       });
     }
   }
 
-  makePayment(projectId: string, amount: number) {
-    this.updateProject(projectId, { payment_status: 'pending_verification' });
+  async makePayment(projectId: string, amount: number): Promise<void> {
+    await this.updateProject(projectId, { payment_status: 'pending_verification' });
   }
 
-  verifyPayment(projectId: string) {
-    this.updateProject(projectId, { payment_status: 'paid', status: 'Paid' });
+  async verifyPayment(projectId: string): Promise<void> {
+    await this.updateProject(projectId, { payment_status: 'paid', status: 'Paid' });
   }
 
-  shareConcept(projectId: string, files: string[], link: string, userId: string) {
-    const user = this.getUser(userId);
-    const project = this.getProjectById(projectId);
+  async shareConcept(projectId: string, files: string[], link: string, userId: string): Promise<void> {
+    const user = await this.getUser(userId);
+    const project = await this.getProjectById(projectId);
     const isSuper = user?.role === 'superadmin';
-    this.updateProject(projectId, {
+    
+    await this.updateProject(projectId, {
       concept_design_file: files,
       concept_canva_link: link,
       concept_is_approved: isSuper,
-      status: isSuper ? 'Concept Shared' : project?.status as ProjectStatus || 'Paid',
+      status: isSuper ? 'Concept Shared' : (project?.status as ProjectStatus || 'Paid'),
       client_approval: undefined
     });
   }
 
-  approveConcept(projectId: string) {
-    this.updateProject(projectId, { concept_is_approved: true, status: 'Concept Shared' });
+  async approveConcept(projectId: string): Promise<void> {
+    await this.updateProject(projectId, { concept_is_approved: true, status: 'Concept Shared' });
   }
 
-  approveClientConcept(projectId: string) {
-    this.updateProject(projectId, { client_approval: 'yes', status: 'Concept Approved' });
+  async approveClientConcept(projectId: string): Promise<void> {
+    await this.updateProject(projectId, { client_approval: 'yes', status: 'Concept Approved' });
   }
 
-  addUpdate(projectId: string, updateData: Omit<Update, 'is_approved'>, userId: string) {
-    const user = this.getUser(userId);
+  async addUpdate(projectId: string, updateData: Omit<Update, 'is_approved'>, userId: string): Promise<void> {
+    const user = await this.getUser(userId);
+    const project = await this.getProjectById(projectId);
+    if (!project) return;
+
     const isSuper = user?.role === 'superadmin';
-    const project = this.getProjectById(projectId);
-    if (project) {
-        const update: Update = { ...updateData, is_approved: isSuper };
-        const newUpdates = [update, ...project.construction_updates];
-        let newStatus = project.status;
-        if (isSuper && project.status !== 'Handover' && project.status !== 'Completed') {
-            newStatus = update.progress_percentage >= 100 ? 'Inspection' : 'Construction';
-        }
-        this.updateProject(projectId, {
-            construction_updates: newUpdates,
-            percent_complete: isSuper ? update.progress_percentage : project.percent_complete,
-            status: newStatus
-        });
+    const update: Update = { ...updateData, is_approved: isSuper };
+    const newUpdates = [update, ...project.construction_updates];
+    let newStatus = project.status;
+    
+    if (isSuper && project.status !== 'Handover' && project.status !== 'Completed') {
+      newStatus = update.progress_percentage >= 100 ? 'Inspection' : 'Construction';
+    }
+
+    await this.updateProject(projectId, {
+      construction_updates: newUpdates,
+      percent_complete: isSuper ? update.progress_percentage : project.percent_complete,
+      status: newStatus
+    });
+  }
+
+  async approveSiteUpdate(projectId: string, updateId: string): Promise<void> {
+    const project = await this.getProjectById(projectId);
+    if (!project) return;
+
+    const updates = project.construction_updates.map(u =>
+      u.id === updateId ? { ...u, is_approved: true } : u
+    );
+    const approvedUpdate = updates.find(u => u.id === updateId);
+
+    await this.updateProject(projectId, {
+      construction_updates: updates,
+      percent_complete: approvedUpdate?.progress_percentage || project.percent_complete,
+      status: approvedUpdate?.progress_percentage! >= 100 ? 'Inspection' : 'Construction'
+    });
+  }
+
+  async finalizeHandover(projectId: string): Promise<void> {
+    await this.updateProject(projectId, {
+      status: 'Completed',
+      completion_date: new Date().toISOString()
+    });
+  }
+
+  async getStaff(): Promise<User[]> {
+    const { data } = await supabase
+      .from('users')
+      .select('*')
+      .in('role', ['superadmin', 'worker', 'project_manager', 'inspector']);
+
+    return (data || []) as User[];
+  }
+
+  async createWorker(data: Partial<User>): Promise<User> {
+    const u: User = {
+      id: `w-${Date.now()}`,
+      name: data.name!,
+      email: data.email!,
+      password: data.password!,
+      phone: data.phone!,
+      role: 'worker',
+      created_projects: []
+    };
+
+    const { error } = await supabase.from('users').insert([u]);
+    if (error) throw error;
+
+    return u;
+  }
+
+  async getAvailability(): Promise<AvailabilityRecord[]> {
+    const { data } = await supabase
+      .from('availability')
+      .select('*')
+      .order('date', { ascending: true });
+
+    return (data || []).map((a: any) => ({
+      date: a.date,
+      slots: a.slots
+    }));
+  }
+
+  async setAvailability(records: AvailabilityRecord[]): Promise<void> {
+    // Delete all existing records
+    await supabase.from('availability').delete().neq('id', '');
+
+    // Insert new records
+    if (records.length > 0) {
+      const { error } = await supabase.from('availability').insert(records);
+      if (error) throw error;
     }
   }
 
-  approveSiteUpdate(projectId: string, updateId: string) {
-    const project = this.getProjectById(projectId);
-    if (project) {
-      const updates = project.construction_updates.map(u => u.id === updateId ? { ...u, is_approved: true } : u);
-      const approvedUpdate = updates.find(u => u.id === updateId);
-      this.updateProject(projectId, {
-        construction_updates: updates,
-        percent_complete: approvedUpdate?.progress_percentage || project.percent_complete,
-        status: approvedUpdate?.progress_percentage! >= 100 ? 'Inspection' : 'Construction'
-      });
+  async isDateAvailable(dateStr: string): Promise<{ available: boolean; slots: string[] }> {
+    const { data } = await supabase
+      .from('availability')
+      .select('*')
+      .eq('date', dateStr)
+      .single();
+
+    if (data) {
+      return { available: (data.slots || []).length > 0, slots: data.slots || [] };
     }
-  }
 
-  finalizeHandover(projectId: string) {
-    this.updateProject(projectId, { status: 'Completed', completion_date: new Date().toISOString() });
-  }
-
-  getStaff(): User[] { return this.users.filter(u => u.role !== 'client'); }
-  createWorker(data: Partial<User>) {
-    const u: User = { id: `w-${Date.now()}`, name: data.name!, email: data.email!, password: data.password!, phone: data.phone!, role: 'worker', created_projects: [] };
-    this.users.push(u); this.save(); return u;
-  }
-
-  getAvailability() { return this.availability; }
-  setAvailability(records: AvailabilityRecord[]) { this.availability = records; this.save(); }
-  isDateAvailable(dateStr: string) {
-    const override = this.availability.find(a => a.date === dateStr);
-    if (override) return { available: override.slots.length > 0, slots: override.slots };
+    // Default: weekdays are available
     const date = new Date(dateStr);
-    const day = date.getDay(); 
+    const day = date.getDay();
     const isWeekday = day !== 0 && day !== 6;
+    const DEFAULT_SLOTS = ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"];
     return { available: isWeekday, slots: isWeekday ? DEFAULT_SLOTS : [] };
   }
 }
 
-export const db = new MockDB();
+// Export a singleton instance
+export const db = new SupabaseDB();

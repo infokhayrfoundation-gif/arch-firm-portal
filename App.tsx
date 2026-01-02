@@ -16,23 +16,31 @@ export default function App() {
   }
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('atelier_session');
-    if (storedUser) {
-        const u = JSON.parse(storedUser);
-        setUser(u);
-        if (currentPage === 'home') {
-             // Smart redirection on session restore
-             if (isStaff(u)) {
-                 setCurrentPage('admin-dashboard');
-             } else {
-                 const projects = db.getProjects(u.id, u.role);
-                 setCurrentPage(projects.length === 0 ? 'initial-form' : 'client-dashboard');
-             }
-        }
-    }
+    const loadSession = async () => {
+      const storedUser = localStorage.getItem('atelier_session');
+      if (storedUser) {
+          const u = JSON.parse(storedUser);
+          setUser(u);
+          if (currentPage === 'home') {
+               // Smart redirection on session restore
+               if (isStaff(u)) {
+                   setCurrentPage('admin-dashboard');
+               } else {
+                   try {
+                     const projects = await db.getProjects(u.id, u.role);
+                     setCurrentPage(projects.length === 0 ? 'initial-form' : 'client-dashboard');
+                   } catch (error) {
+                     console.error('Error loading projects:', error);
+                     setCurrentPage('client-dashboard');
+                   }
+               }
+          }
+      }
+    };
+    loadSession();
   }, []);
 
-  const handleLogin = (u: User) => {
+  const handleLogin = async (u: User) => {
     setUser(u);
     localStorage.setItem('atelier_session', JSON.stringify(u));
     
@@ -40,11 +48,12 @@ export default function App() {
         setCurrentPage('admin-dashboard');
     } else {
         // For clients: if they have no projects, they MUST complete the initial form
-        const projects = db.getProjects(u.id, u.role);
-        if (projects.length === 0) {
-            setCurrentPage('initial-form');
-        } else {
-            setCurrentPage('client-dashboard');
+        try {
+          const projects = await db.getProjects(u.id, u.role);
+          setCurrentPage(projects.length === 0 ? 'initial-form' : 'client-dashboard');
+        } catch (error) {
+          console.error('Error loading projects:', error);
+          setCurrentPage('client-dashboard');
         }
     }
   };

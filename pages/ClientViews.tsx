@@ -166,11 +166,17 @@ export const InitialFormPage: React.FC<{ user: User; onComplete: () => void; onL
   const handleSubmit = async (e: React.FormEvent) => { 
     e.preventDefault(); 
     setIsSubmitting(true);
-    const initialForm = { ...form, submitted_at: new Date().toISOString() };
-    db.createProject(user.id, initialForm); 
-    await syncProjectBriefToSheets(user, initialForm);
-    setIsSubmitting(false);
-    onComplete(); 
+    try {
+      const initialForm = { ...form, submitted_at: new Date().toISOString() };
+      await db.createProject(user.id, initialForm); 
+      await syncProjectBriefToSheets(user, initialForm);
+      onComplete();
+    } catch (error) {
+      console.error('Error creating project:', error);
+      alert('Failed to create project. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -208,14 +214,51 @@ export const InitialFormPage: React.FC<{ user: User; onComplete: () => void; onL
 export const AppointmentBooking: React.FC<{ user: User; onComplete: () => void; onCancel: () => void }> = ({ user, onComplete, onCancel }) => {
     const [date, setDate] = useState('');
     const [time, setTime] = useState('');
-    const projects = db.getProjects(user.id, user.role);
-    const project = projects[projects.length - 1];
+    const [project, setProject] = useState<Project | null>(null);
+    const [availableSlots, setAvailableSlots] = useState<string[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
     
-    const handleBooking = (e: React.FormEvent) => { 
+    useEffect(() => {
+      const loadData = async () => {
+        try {
+          const projects = await db.getProjects(user.id, user.role);
+          if (projects.length > 0) {
+            setProject(projects[projects.length - 1]);
+          }
+        } catch (error) {
+          console.error('Error loading projects:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      loadData();
+    }, [user.id, user.role]);
+
+    useEffect(() => {
+      const loadSlots = async () => {
+        if (date) {
+          try {
+            const availability = await db.isDateAvailable(date);
+            setAvailableSlots(availability.slots);
+          } catch (error) {
+            console.error('Error loading availability:', error);
+            setAvailableSlots([]);
+          }
+        }
+      };
+      loadSlots();
+    }, [date]);
+    
+    const handleBooking = async (e: React.FormEvent) => { 
       e.preventDefault(); 
-      if (project) { 
-        db.bookAppointment(project.id, date, time, user.id); 
-        onComplete(); 
+      if (project) {
+        try {
+          await db.bookAppointment(project.id, date, time, user.id); 
+          onComplete();
+        } catch (error) {
+          console.error('Error booking appointment:', error);
+          alert('Failed to book appointment. Please try again.');
+        }
       } 
     };
 
@@ -229,11 +272,13 @@ export const AppointmentBooking: React.FC<{ user: User; onComplete: () => void; 
                     <input type="date" required value={date} onChange={e => setDate(e.target.value)} className="w-full p-4 border rounded-xl" />
                     {date && (
                         <div className="grid grid-cols-3 gap-2">
-                            {db.isDateAvailable(date).slots.map(s => (
+                            {availableSlots.map(s => (
                                 <button key={s} type="button" onClick={() => setTime(s)} className={`p-2 text-[10px] font-bold border rounded-lg transition-all ${time === s ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white hover:bg-stone-50'}`}>{s}</button>
                             ))}
                         </div>
                     )}
+                    {isLoading && <p className="text-center text-stone-400 text-sm">Loading...</p>}
+                    {!project && !isLoading && <p className="text-center text-stone-400 text-sm">No project found. Please create a project first.</p>}
                     <Button type="submit" className="w-full" disabled={!date || !time}>Confirm Appointment</Button>
                 </form>
             </GlassCard>
@@ -254,8 +299,15 @@ export const ClientDashboard: React.FC<{ user: User; onLogout: () => void; navig
     const [isPaystackOpen, setIsPaystackOpen] = useState(false);
 
     useEffect(() => { 
-        const projs = db.getProjects(user.id, user.role);
-        setProjects(projs); 
+        const loadProjects = async () => {
+            try {
+                const projs = await db.getProjects(user.id, user.role);
+                setProjects(projs);
+            } catch (error) {
+                console.error('Error loading projects:', error);
+            }
+        };
+        loadProjects();
     }, [user.id, user.role, activeTab]);
 
     // Supabase Realtime listener for projects table updates
@@ -264,19 +316,23 @@ export const ClientDashboard: React.FC<{ user: User; onLogout: () => void; navig
 
         // Subscribe to changes on the 'projects' table
         const channel = supabase
-            .channel('projects-changes')
+            .channel(`projects-changes-${user.id}`)
             .on(
                 'postgres_changes',
                 {
-                    event: 'UPDATE',
+                    event: '*',
                     schema: 'public',
                     table: 'projects',
                     filter: `client_id=eq.${user.id}`
                 },
-                (payload) => {
-                    // When an UPDATE occurs, refresh the projects from the database
-                    const updatedProjects = db.getProjects(user.id, user.role);
-                    setProjects(updatedProjects);
+                async (payload) => {
+                    // When a change occurs, refresh the projects from the database
+                    try {
+                        const updatedProjects = await db.getProjects(user.id, user.role);
+                        setProjects(updatedProjects);
+                    } catch (error) {
+                        console.error('Error refreshing projects:', error);
+                    }
                 }
             )
             .subscribe();
@@ -305,21 +361,33 @@ export const ClientDashboard: React.FC<{ user: User; onLogout: () => void; navig
 
     const approvedUpdates = project.construction_updates.filter(u => u.is_approved);
 
-    const handleRevisionSubmit = () => {
+    const handleRevisionSubmit = async () => {
         if (!revisionNotes.trim()) return alert("Please provide revision notes.");
-        db.requestProposalRevision(project.id, revisionNotes);
-        setIsRevising(false);
-        setRevisionNotes('');
-        setProjects(db.getProjects(user.id, user.role));
-        alert("Revision requested.");
+        try {
+            await db.requestProposalRevision(project.id, revisionNotes);
+            setIsRevising(false);
+            setRevisionNotes('');
+            const updatedProjects = await db.getProjects(user.id, user.role);
+            setProjects(updatedProjects);
+            alert("Revision requested.");
+        } catch (error) {
+            console.error('Error requesting revision:', error);
+            alert("Failed to request revision. Please try again.");
+        }
     };
 
-    const handlePaymentSuccess = () => {
+    const handlePaymentSuccess = async () => {
         setIsPaystackOpen(false);
-        // Changed from verifyPayment to makePayment to ensure admin must confirm it
-        db.makePayment(project.id, project.proposal?.amount || 0);
-        setProjects(db.getProjects(user.id, user.role));
-        setActiveTab('Payment');
+        try {
+            // Changed from verifyPayment to makePayment to ensure admin must confirm it
+            await db.makePayment(project.id, project.proposal?.amount || 0);
+            const updatedProjects = await db.getProjects(user.id, user.role);
+            setProjects(updatedProjects);
+            setActiveTab('Payment');
+        } catch (error) {
+            console.error('Error processing payment:', error);
+            alert("Failed to process payment. Please try again.");
+        }
     };
 
     const renderContent = () => {
@@ -453,7 +521,17 @@ export const ClientDashboard: React.FC<{ user: User; onLogout: () => void; navig
                                     <div className="flex gap-4 w-full md:w-auto">
                                         {project.status === 'Proposal Sent' && !isRevising && (
                                             <>
-                                                <Button variant="gold" className="whitespace-nowrap flex-1 md:flex-none" onClick={() => { db.updateProject(project.id, { status: 'Payment Pending' }); setActiveTab('Payment'); }}>Accept & Proceed</Button>
+                                                <Button variant="gold" className="whitespace-nowrap flex-1 md:flex-none" onClick={async () => { 
+                                                    try {
+                                                        await db.updateProject(project.id, { status: 'Payment Pending' }); 
+                                                        const updatedProjects = await db.getProjects(user.id, user.role);
+                                                        setProjects(updatedProjects);
+                                                        setActiveTab('Payment');
+                                                    } catch (error) {
+                                                        console.error('Error updating project:', error);
+                                                        alert('Failed to update project. Please try again.');
+                                                    }
+                                                }}>Accept & Proceed</Button>
                                                 <Button variant="outline" className="whitespace-nowrap flex-1 md:flex-none" onClick={() => setIsRevising(true)}>Challenge Proposal</Button>
                                             </>
                                         )}
@@ -546,7 +624,16 @@ export const ClientDashboard: React.FC<{ user: User; onLogout: () => void; navig
                                         <div className="w-full bg-emerald-50 text-emerald-700 p-6 rounded-3xl text-center font-bold uppercase tracking-[0.2em]">Design Approved ✓</div>
                                     ) : (
                                         <>
-                                            <Button onClick={() => { db.approveClientConcept(project.id); setProjects(db.getProjects(user.id, user.role)); }} className="flex-1">Authorize Vision</Button>
+                                            <Button onClick={async () => { 
+                                                try {
+                                                    await db.approveClientConcept(project.id); 
+                                                    const updatedProjects = await db.getProjects(user.id, user.role);
+                                                    setProjects(updatedProjects);
+                                                } catch (error) {
+                                                    console.error('Error approving concept:', error);
+                                                    alert('Failed to approve concept. Please try again.');
+                                                }
+                                            }} className="flex-1">Authorize Vision</Button>
                                             <Button variant="outline" className="flex-1">Request Changes</Button>
                                         </>
                                     )}

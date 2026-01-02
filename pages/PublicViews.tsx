@@ -298,23 +298,31 @@ export const Login: React.FC<Props> = ({ onLogin, navigateTo }) => {
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('client');
 
-  const handleLogin = (e?: React.FormEvent) => {
+  const handleLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const user = db.login(email.trim(), password, role);
-    if (user) {
-      onLogin(user);
-    } else {
-      alert(`Authentication failed. Please check your email, password, and ensure you selected the correct role (${role}).`);
+    try {
+      const user = await db.login(email.trim(), password, role);
+      if (user) {
+        onLogin(user);
+      } else {
+        alert(`Authentication failed. Please check your email, password, and ensure you selected the correct role (${role}).`);
+      }
+    } catch (error) {
+      console.error('Login error:', error);
+      alert('An error occurred during login. Please try again.');
     }
   };
 
-  const fillAndLogin = (e: string, p: string, r: string) => {
+  const fillAndLogin = async (e: string, p: string, r: string) => {
       setEmail(e);
       setPassword(p);
       setRole(r);
-      // Directly call login from DB to avoid state async issues for the demo
-      const user = db.login(e, p, r);
-      if (user) onLogin(user);
+      try {
+        const user = await db.login(e, p, r);
+        if (user) onLogin(user);
+      } catch (error) {
+        console.error('Login error:', error);
+      }
   }
 
   return (
@@ -396,19 +404,25 @@ export const ForgotPassword: React.FC<Props> = ({ navigateTo, setResetEmailConte
 
   const handleRequestReset = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = db.getUserByEmail(email);
-    if (!user) {
-      alert("No account found with that email address.");
-      return;
-    }
+    try {
+      const user = await db.getUserByEmail(email);
+      if (!user) {
+        alert("No account found with that email address.");
+        return;
+      }
 
-    setIsLoading(true);
-    const body = await generatePasswordResetEmail(email);
-    setEmailBody(body);
-    setIsLoading(false);
-    
-    if (setResetEmailContext) {
-      setResetEmailContext(email);
+      setIsLoading(true);
+      const body = await generatePasswordResetEmail(email);
+      setEmailBody(body);
+      setIsLoading(false);
+      
+      if (setResetEmailContext) {
+        setResetEmailContext(email);
+      }
+    } catch (error) {
+      console.error('Error requesting reset:', error);
+      alert('An error occurred. Please try again.');
+      setIsLoading(false);
     }
   };
 
@@ -460,7 +474,7 @@ export const ResetPassword: React.FC<Props> = ({ navigateTo, resetEmailContext }
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
-  const handleReset = (e: React.FormEvent) => {
+  const handleReset = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!resetEmailContext) {
       alert("Session expired. Please request a new reset link.");
@@ -476,9 +490,14 @@ export const ResetPassword: React.FC<Props> = ({ navigateTo, resetEmailContext }
       return;
     }
 
-    db.updateUserPassword(resetEmailContext, newPassword);
-    alert("Your password has been updated successfully.");
-    navigateTo('login');
+    try {
+      await db.updateUserPassword(resetEmailContext, newPassword);
+      alert("Your password has been updated successfully.");
+      navigateTo('login');
+    } catch (error) {
+      console.error('Error resetting password:', error);
+      alert('Failed to update password. Please try again.');
+    }
   };
 
   return (
@@ -507,7 +526,7 @@ export const Signup: React.FC<Props> = ({ onLogin, navigateTo }) => {
         e.preventDefault();
         setIsSyncing(true);
         try {
-            const user = db.signup({
+            const user = await db.signup({
                 name: formData.name,
                 email: formData.email.trim(),
                 phone: formData.phone,

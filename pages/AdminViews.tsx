@@ -5,6 +5,26 @@ import { db } from '../services/db';
 import { Button, Input, StatusBadge, FileUpload, GlassCard, SectionTitle, Label } from '../components/UI';
 import { generateEmailTemplate, generateProjectSummary } from '../services/ai';
 
+// Helper component to render client name asynchronously
+const ClientName: React.FC<{ project: Project }> = ({ project }) => {
+  const [clientName, setClientName] = useState<string>('Loading...');
+  
+  useEffect(() => {
+    const loadClient = async () => {
+      try {
+        const user = await db.getUser(project.client_id);
+        setClientName(user?.name || 'Unknown');
+      } catch (error) {
+        console.error('Error loading client:', error);
+        setClientName('Unknown');
+      }
+    };
+    loadClient();
+  }, [project.client_id]);
+  
+  return <span>{clientName}</span>;
+};
+
 export const AdminDashboard: React.FC<{ user: User; onLogout: () => void }> = ({ user, onLogout }) => {
   const isSuper = user.role === 'superadmin';
   const [projects, setProjects] = useState<Project[]>([]);
@@ -16,8 +36,13 @@ export const AdminDashboard: React.FC<{ user: User; onLogout: () => void }> = ({
     refreshData();
   }, []);
 
-  const refreshData = () => {
-    setProjects(db.getProjects(undefined, user.role));
+  const refreshData = async () => {
+    try {
+      const projs = await db.getProjects(undefined, user.role);
+      setProjects(projs);
+    } catch (error) {
+      console.error('Error refreshing data:', error);
+    }
   };
 
   const totalActive = projects.filter(p => p.status !== 'Completed').length;
@@ -29,9 +54,9 @@ export const AdminDashboard: React.FC<{ user: User; onLogout: () => void }> = ({
     setAiSummary(summary);
   };
 
-  const closeModal = () => {
+  const closeModal = async () => {
     setEditingProject(null);
-    refreshData();
+    await refreshData();
   };
 
   return (
@@ -96,7 +121,9 @@ export const AdminDashboard: React.FC<{ user: User; onLogout: () => void }> = ({
                                             {p.project_title}
                                             <span className="ml-2 inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" title="Synced to Sheets"></span>
                                         </td>
-                                        <td className="px-8 py-6 text-xs text-stone-500">{db.getUser(p.client_id)?.name}</td>
+                                        <td className="px-8 py-6 text-xs text-stone-500">
+                                          <ClientName project={p} />
+                                        </td>
                                         <td className="px-8 py-6"><StatusBadge status={p.status} /></td>
                                         <td className="px-8 py-6 text-right">
                                             <button onClick={() => handleEdit(p)} className="text-[10px] font-bold uppercase tracking-widest border-b border-zinc-900">Manage →</button>
@@ -111,7 +138,7 @@ export const AdminDashboard: React.FC<{ user: User; onLogout: () => void }> = ({
         )}
 
         {activeView === 'availability' && <AvailabilityManager />}
-        {activeView === 'staff' && isSuper && <StaffManager />}
+        {activeView === 'staff' && isSuper && <StaffManager refreshMain={refreshData} />}
         {activeView === 'approvals' && isSuper && <ApprovalQueue refreshMain={refreshData} />}
 
         {editingProject && (
@@ -122,18 +149,39 @@ export const AdminDashboard: React.FC<{ user: User; onLogout: () => void }> = ({
   );
 };
 
-const StaffManager = () => {
+const StaffManager = ({ refreshMain }: { refreshMain: () => void }) => {
     const [name, setName] = useState('');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    const [staff, setStaff] = useState<User[]>(db.getStaff());
+    const [staff, setStaff] = useState<User[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
 
-    const handleCreate = () => {
+    useEffect(() => {
+        const loadStaff = async () => {
+            try {
+                const staffList = await db.getStaff();
+                setStaff(staffList);
+            } catch (error) {
+                console.error('Error loading staff:', error);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        loadStaff();
+    }, []);
+
+    const handleCreate = async () => {
         if(!name || !email || !password) return alert("All fields required");
-        db.createWorker({ name, email, password });
-        setStaff(db.getStaff());
-        setName(''); setEmail(''); setPassword('');
-        alert("Worker account created successfully.");
+        try {
+            await db.createWorker({ name, email, password });
+            const updatedStaff = await db.getStaff();
+            setStaff(updatedStaff);
+            setName(''); setEmail(''); setPassword('');
+            alert("Worker account created successfully.");
+        } catch (error) {
+            console.error('Error creating worker:', error);
+            alert("Failed to create worker account. Please try again.");
+        }
     };
 
     return (
@@ -163,8 +211,20 @@ const StaffManager = () => {
 };
 
 const ApprovalQueue = ({ refreshMain }: { refreshMain: () => void }) => {
-    const projects = db.getProjects(undefined, 'superadmin');
+    const [projects, setProjects] = useState<Project[]>([]);
     
+    useEffect(() => {
+        const loadProjects = async () => {
+            try {
+                const projs = await db.getProjects(undefined, 'superadmin');
+                setProjects(projs);
+            } catch (error) {
+                console.error('Error loading projects:', error);
+            }
+        };
+        loadProjects();
+    }, []);
+
     // Gathers all things needing Anjola's approval
     const pendingProposals = projects.filter(p => p.proposal?.status === 'pending_approval');
     const pendingConcepts = projects.filter(p => p.concept_design_file && !p.concept_is_approved);
@@ -172,10 +232,50 @@ const ApprovalQueue = ({ refreshMain }: { refreshMain: () => void }) => {
     const pendingUpdates: {p: Project, u: Update}[] = [];
     projects.forEach(p => p.construction_updates.forEach(u => { if(!u.is_approved) pendingUpdates.push({p, u}) }));
 
-    const handleApproveProposal = (id: string) => { db.approveProposal(id); refreshMain(); };
-    const handleApproveConcept = (id: string) => { db.approveConcept(id); refreshMain(); };
-    const handleApproveUpdate = (pid: string, uid: string) => { db.approveSiteUpdate(pid, uid); refreshMain(); };
-    const handleApprovePayment = (id: string) => { db.verifyPayment(id); refreshMain(); };
+    const handleApproveProposal = async (id: string) => { 
+        try {
+            await db.approveProposal(id); 
+            await refreshMain();
+            const updated = await db.getProjects(undefined, 'superadmin');
+            setProjects(updated);
+        } catch (error) {
+            console.error('Error approving proposal:', error);
+            alert('Failed to approve proposal. Please try again.');
+        }
+    };
+    const handleApproveConcept = async (id: string) => { 
+        try {
+            await db.approveConcept(id); 
+            await refreshMain();
+            const updated = await db.getProjects(undefined, 'superadmin');
+            setProjects(updated);
+        } catch (error) {
+            console.error('Error approving concept:', error);
+            alert('Failed to approve concept. Please try again.');
+        }
+    };
+    const handleApproveUpdate = async (pid: string, uid: string) => { 
+        try {
+            await db.approveSiteUpdate(pid, uid); 
+            await refreshMain();
+            const updated = await db.getProjects(undefined, 'superadmin');
+            setProjects(updated);
+        } catch (error) {
+            console.error('Error approving update:', error);
+            alert('Failed to approve update. Please try again.');
+        }
+    };
+    const handleApprovePayment = async (id: string) => { 
+        try {
+            await db.verifyPayment(id); 
+            await refreshMain();
+            const updated = await db.getProjects(undefined, 'superadmin');
+            setProjects(updated);
+        } catch (error) {
+            console.error('Error verifying payment:', error);
+            alert('Failed to verify payment. Please try again.');
+        }
+    };
 
     return (
         <div className="space-y-8 animate-fade-in">
@@ -238,33 +338,38 @@ const ProjectEditor: React.FC<{ project: Project; aiSummary: string; onClose: ()
     const [conceptFile, setConceptFile] = useState<string | null>(null);
     const [updateImages, setUpdateImages] = useState<string[]>([]);
 
-    const handleAction = (type: 'proposal' | 'concept' | 'update' | 'confirm_appointment' | 'verify_payment') => {
-        if(type === 'proposal') {
-            db.sendProposal(project.id, amount, proposalFile || '', currentUser.id);
-            alert(isSuper ? "Proposal sent to client." : "Proposal submitted to Anjola for approval.");
-        } else if (type === 'concept') {
-            db.shareConcept(project.id, conceptFile ? [conceptFile] : [], canvaLink, currentUser.id);
-            alert(isSuper ? "Concept published." : "Concept submitted for review.");
-        } else if (type === 'update') {
-            db.addUpdate(project.id, {
-                id: Date.now().toString(),
-                project_id: project.id,
-                update_title: 'Construction Update',
-                update_notes: updateText,
-                progress_images: updateImages,
-                progress_percentage: progress,
-                created_by_id: currentUser.id,
-                created_at: new Date().toISOString()
-            }, currentUser.id);
-            alert(isSuper ? "Update published." : "Update sent to review queue.");
-        } else if (type === 'confirm_appointment') {
-            db.confirmAppointment(project.id);
-            alert("Consultation slot confirmed.");
-        } else if (type === 'verify_payment') {
-            db.verifyPayment(project.id);
-            alert("Payment verified. Project phase updated.");
+    const handleAction = async (type: 'proposal' | 'concept' | 'update' | 'confirm_appointment' | 'verify_payment') => {
+        try {
+            if(type === 'proposal') {
+                await db.sendProposal(project.id, amount, proposalFile || '', currentUser.id);
+                alert(isSuper ? "Proposal sent to client." : "Proposal submitted to Anjola for approval.");
+            } else if (type === 'concept') {
+                await db.shareConcept(project.id, conceptFile ? [conceptFile] : [], canvaLink, currentUser.id);
+                alert(isSuper ? "Concept published." : "Concept submitted for review.");
+            } else if (type === 'update') {
+                await db.addUpdate(project.id, {
+                    id: Date.now().toString(),
+                    project_id: project.id,
+                    update_title: 'Construction Update',
+                    update_notes: updateText,
+                    progress_images: updateImages,
+                    progress_percentage: progress,
+                    created_by_id: currentUser.id,
+                    created_at: new Date().toISOString()
+                }, currentUser.id);
+                alert(isSuper ? "Update published." : "Update sent to review queue.");
+            } else if (type === 'confirm_appointment') {
+                await db.confirmAppointment(project.id);
+                alert("Consultation slot confirmed.");
+            } else if (type === 'verify_payment') {
+                await db.verifyPayment(project.id);
+                alert("Payment verified. Project phase updated.");
+            }
+            onClose();
+        } catch (error) {
+            console.error('Error performing action:', error);
+            alert('Failed to perform action. Please try again.');
         }
-        onClose();
     };
 
     return (
@@ -395,7 +500,7 @@ const AvailabilityManager: React.FC = () => {
         <GlassCard className="max-w-xl mx-auto">
             <SectionTitle>Global Schedule Control</SectionTitle>
             <div className="space-y-6">
-                <input type="date" value={selectedDate} onChange={e => { setSelectedDate(e.target.value); setSelectedSlots(db.isDateAvailable(e.target.value).slots); }} className="w-full p-4 rounded-xl border" />
+                <input type="date" value={selectedDate} onChange={e => handleDateChange(e.target.value)} className="w-full p-4 rounded-xl border" />
                 {selectedDate && (
                     <div className="grid grid-cols-3 gap-2">
                         {standardSlots.map(s => (
